@@ -361,3 +361,5 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/YTDownloader/ffmpeg-2022-01-27-git-3c831847a8-full_build
+/YTDownloader/ffmpeg-2022-01-27-git-3c831847a8-full_build.7z
