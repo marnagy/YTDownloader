@@ -225,15 +225,19 @@ namespace YTDownloader
 					.OrderByDescending(s => s.AudioBitrate)
 					.First();
 				var audioFileName = Path.Combine(".", subDir.Name, $"audio.{audioStream.AudioFormat.ToString().ToLower()}");
-				Console.WriteLine($"Downloading audio with bitrate {audioStream.AudioBitrate} ...");
-				await Download(audioStream, audioFileName);
+				//Console.WriteLine($"Downloading audio with bitrate {audioStream.AudioBitrate} ...");
+				var audioDownloading = Download(audioStream, audioFileName);
 				// download video
 				var videoStream = streams.Where(s => IsVideoOnly(s) && s.Resolution <= parsedArgs.MaxResolution)
 					.OrderByDescending(s => s.Resolution)
 					.First();
 				var videoFileName = Path.Combine(".", subDir.Name, $"video.{videoStream.Format.ToString().ToLower()}");
-				Console.WriteLine($"Downloading video with resolution {videoStream.Resolution} ...");
-				await Download(videoStream, videoFileName);
+				//Console.WriteLine($"Downloading video with resolution {videoStream.Resolution} ...");
+				var videoDownloading = Download(videoStream, videoFileName);
+				
+				await audioDownloading;
+				await videoDownloading;
+
 				// merge using FFmpeg
 				string outputPath = Path.Combine(currDir.FullName, RemoveForbidden(videoStream.FullName));
 				IMediaInfo videoMediaInfo = await FFmpeg.GetMediaInfo(videoFileName);
@@ -334,6 +338,7 @@ namespace YTDownloader
 				.AddStream(new[] {audioStream })
 				.SetOutputFormat(Format.mp3)
 				.SetOutput( Path.Combine(Directory.GetCurrentDirectory(), outputPath))
+				.SetOverwriteOutput(overwrite: true)
 				.Start();
 			
 			return outputPath;
