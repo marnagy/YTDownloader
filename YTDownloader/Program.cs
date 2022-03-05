@@ -18,7 +18,7 @@ namespace YTDownloader
 {
 	class Program
 	{
-		const string ApiUrl = "http://localhost:8000";
+		const string ApiUrl = "https://ytbes.herokuapp.com";
 		const string TestEndpoint = "/test";
 		const string PlaylistEndpoint = "/playlist";
 		const string ThumbnailEndpoint = "/thumbnail";
