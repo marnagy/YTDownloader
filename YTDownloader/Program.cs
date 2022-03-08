@@ -39,11 +39,15 @@ namespace YTDownloader
 
 			Arguments parsedArgs = getArgs(args);
 
+			//Console.WriteLine("Arguments loaded.");
+
 			if ( ! await IsServerRunning() )
 			{
 				WriteError("Internet is down or server is not responding.\nPlease, try again later.");
 				return;
 			}
+
+			//Console.WriteLine("Server is online.");
 
 			var urls = new List<string>();
 			if ( parsedArgs.Playlist is not null )
@@ -60,6 +64,7 @@ namespace YTDownloader
 				urls.Add(parsedArgs.Url);
 			}
 
+			//Console.WriteLine("Starting downloads...");
 
 			bool showPlaylistProgressBar = urls.Count > 1;
 			ProgressBar progressBar = null;
@@ -71,7 +76,7 @@ namespace YTDownloader
 			var handlers = new List<Task<string>>();
 			foreach (var url in urls)
 			{
-				YouTubeVideo[] streams = GetStreams(url);
+				YouTubeVideo[] streams = (await GetStreams(url)).ToArray();
 				var handler = HandleDownload(streams, parsedArgs, url, progressBar);
 				handlers.Add(handler);
 			}
@@ -126,12 +131,13 @@ namespace YTDownloader
 			return result;
 		}
 
-		private static YouTubeVideo[] GetStreams(string url)
+		private async static Task<IEnumerable<YouTubeVideo>> GetStreams(string url)
 		{
-			YouTubeVideo[] streams;
+			IEnumerable<YouTubeVideo> streams;
 			try
 			{
-				streams = YouTube.Default.GetAllVideos(url).ToArray();
+				streams = await YouTube.Default.GetAllVideosAsync(url);
+				//streams = YouTube.Default.GetAllVideos(url).ToArray();
 				return streams;
 			}
 			catch (TimeoutException)
@@ -139,7 +145,7 @@ namespace YTDownloader
 				WriteError("Your internet connection timed out. Please, try again.");
 				return Array.Empty<YouTubeVideo>();
 			}
-			catch ( UnavailableStreamException)
+			catch (UnavailableStreamException)
 			{
 				WriteError("This video is not publicly accessible.");
 				return Array.Empty<YouTubeVideo>();
@@ -221,14 +227,14 @@ namespace YTDownloader
 			try{
 				//Directory.SetCurrentDirectory(subDir.FullName);
 				// download audio
-				var audioStream = streams.Where(s => IsAudioOnly(s))
+				var audioStream = streams.Where(s => s.IsAudioOnly())
 					.OrderByDescending(s => s.AudioBitrate)
 					.First();
 				var audioFileName = Path.Combine(".", subDir.Name, $"audio.{audioStream.AudioFormat.ToString().ToLower()}");
 				//Console.WriteLine($"Downloading audio with bitrate {audioStream.AudioBitrate} ...");
 				var audioDownloading = Download(audioStream, audioFileName);
 				// download video
-				var videoStream = streams.Where(s => IsVideoOnly(s) && s.Resolution <= parsedArgs.MaxResolution)
+				var videoStream = streams.Where(s => s.IsVideoOnly() && s.Resolution <= parsedArgs.MaxResolution)
 					.OrderByDescending(s => s.Resolution)
 					.First();
 				var videoFileName = Path.Combine(".", subDir.Name, $"video.{videoStream.Format.ToString().ToLower()}");
@@ -248,18 +254,34 @@ namespace YTDownloader
 				IStream audioMediaStream = audioMediaInfo.AudioStreams.FirstOrDefault()
 					?.SetCodec(AudioCodec.mp3);
 
-				var conversionResult = await FFmpeg.Conversions.New()
+				//var cut_video_title = videoStream.Info.Title.Length > 20 ? videoStream.Info.Title.Substring(0, 20) : videoStream.Info.Title;
+				var conversion_desc = $"Converting to MP4";
+				var progressBar = new ProgressBarSlim((int)videoMediaInfo.Size);
+				progressBar.Refresh(0, conversion_desc);
+				var conversion = FFmpeg.Conversions.New()
 					.AddStream(
 						videoMediaStream,
 						audioMediaStream
 					)
-					//.SetOutputFormat(Format.mp4)
-					.SetOutput( outputPath )
-					.Start();
+					.SetOutputFormat(Format.mp4)
+					.SetOutput( outputPath );
+				//conversion.OnProgress += (sender, args) =>
+				//{
+				//	var percent = (int)(Math.Round(args.Duration.TotalSeconds / args.TotalLength.TotalSeconds, 2) * 100);
+				//	//Console.WriteLine($"Total: {args.Duration.TotalSeconds}");
+				//	Console.SetCursorPosition(0, Console.CursorTop);
+				//	Console.WriteLine($"[{args.Duration} / {args.TotalLength}] {percent}%\r");
+				//	//progressBar.Refresh( (int)Math.Floor(args.Duration.TotalSeconds), conversion_desc);
+				//};
+				var conversionResult = await conversion.Start();
 
 				//var conversion = await FFmpeg.Conversions.FromSnippet.AddAudio(videoFileName, audioFileName, outputPath);
 				//IConversionResult result = await conversion
 				//	.Start();
+			}
+			catch
+			{
+				
 			}
 			finally
 			{
@@ -278,7 +300,7 @@ namespace YTDownloader
 
 		private static async Task DownloadAudio(YouTubeVideo[] streams, string youtubeUrl)
 		{
-			var stream = streams.Where(s => IsAudioOnly(s))
+			var stream = streams.Where(s => s.IsAudioOnly())
 				.OrderByDescending(s => s.AudioBitrate)
 				.First();
 			var fileName = GetFileName(stream, OutputType.Audio);
@@ -295,7 +317,7 @@ namespace YTDownloader
 			var tfile = TagLib.File.Create(convertedFileName);
 			try
 			{
-				tfile.Tag.Performers = new[] { author };
+				tfile.Tag.Performers = new string[] { author };
 				tfile.Tag.Title = title;
 				byte[] thumbnailArr = await GetThumbnail( youtubeUrl );
 				//System.IO.File.WriteAllBytes("thumbnail.jpg", thumbnailArr);
@@ -347,19 +369,12 @@ namespace YTDownloader
 		static async Task Download(YouTubeVideo stream, string fileName)
 		{
 			var contentLength = stream.ContentLength ?? int.MaxValue;
-			//Console.WriteLine($"ContentLength: {contentLength}");
-			if ( contentLength <= 0 )
-				throw new ArgumentNullException("Valid video cannot have null as ContentLength.");
 
-			//Console.WriteLine($"Total length in MB: { Math.Round(totalLength / 1024.0 * 1024, 2)}");
-			//Console.WriteLine($"Filename: {fileName}");
 			int descConst = 30;
 			var fileNameNoExt = Path.GetFileNameWithoutExtension(fileName);
 			var desc = $"{fileNameNoExt.Substring(0, fileNameNoExt.Length < descConst ? fileNameNoExt.Length : descConst)}";
-			//var konsoleProgressBar = new ProgressBarSlimLong(contentLength.Value);
-			var konsoleProgressBar = new ProgressBarSlim((int)contentLength); // new ProgressBar(PbStyle.SingleLine, (int)contentLength);
+			var konsoleProgressBar = new ProgressBarSlim((int)contentLength);
 			konsoleProgressBar.Refresh(0, desc);
-
 			const int KB = (1 << 10);
 			const int MB = (1 << 20);
 			int bufferSize = 2 * MB;
@@ -380,7 +395,7 @@ namespace YTDownloader
 		{
 			char[] forbidden = new[] { '/', '\\', '|' };
 			var sb = new StringBuilder();
-			foreach (var c in name.Select(c => (int)c <= 126 && (int)c >= 32 && !forbidden.Contains(c) ? c : '_' ))
+			foreach (var c in name.Select(c => c <= 126 && c >= 32 && !forbidden.Contains(c) ? c : '_' ))
 			{
 				sb.Append(c);
 			}
@@ -400,20 +415,20 @@ namespace YTDownloader
 			}
 		}
 
-		static bool IsAudioOnly(YouTubeVideo video) =>
-			video.Format == VideoFormat.Unknown &&
-				video.AudioFormat != AudioFormat.Unknown;
+		//static bool IsAudioOnly(YouTubeVideo video) =>
+		//	video.Format == VideoFormat.Unknown &&
+		//		video.AudioFormat != AudioFormat.Unknown;
 		
-		static bool IsVideoOnly(YouTubeVideo video) =>
-			video.Format == VideoFormat.Mp4 //video.Format != VideoFormat.Unknown 
-				&& video.AudioFormat == AudioFormat.Unknown;
+		//static bool IsVideoOnly(YouTubeVideo video) =>
+		//	video.Format == VideoFormat.Mp4 //video.Format != VideoFormat.Unknown 
+		//		&& video.AudioFormat == AudioFormat.Unknown;
 
 		static YouTubeVideo GetStream(YouTubeVideo[] streams, Arguments args)
 		{
 			switch (args.OutFormat)
 			{
 				case OutputType.Audio:
-					return streams.Where(IsAudioOnly)
+					return streams.Where(s => s.IsAudioOnly())
 						.OrderByDescending(v => v.AudioBitrate)
 						.First();
 				case OutputType.Video:
@@ -466,7 +481,7 @@ namespace YTDownloader
 				if ( ( argsObj.Url is null && argsObj.Playlist is null ) || 
 					( !(argsObj.Url is null) && !(argsObj.Playlist is null) )) // --help (if required arg is null)
 				{
-					WriteError("Exactly one of flags -u/--url and -p/--playlisth has to contain value.\nPlease, try again.");
+					WriteError("Exactly one of flags -u/--url and -p/--playlist has to contain value.\nPlease, try again.");
 					return null;
 				}
 
