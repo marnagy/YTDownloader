@@ -68,7 +68,7 @@ namespace YTDownloader
 
 			bool showPlaylistProgressBar = urls.Count > 1;
 			ProgressBar progressBar = null;
-			if ( showPlaylistProgressBar)
+			if ( showPlaylistProgressBar )
 			{
 				progressBar = new ProgressBar(urls.Count);
 				progressBar.Refresh(MainProgressBarCounter, MainProgressBarDescription);
@@ -76,7 +76,15 @@ namespace YTDownloader
 			var handlers = new List<Task<string>>();
 			foreach (var url in urls)
 			{
-				YouTubeVideo[] streams = (await GetStreams(url)).ToArray();
+				YouTubeVideo[] streams = new YouTubeVideo[0];
+				try
+				{
+					streams = (await GetStreams(url)).ToArray();
+				}
+				catch ( UnavailableStreamException e)
+				{
+					WriteError($"Stream is unavailable for {url}.\n{e.Message}");
+				}
 				var handler = HandleDownload(streams, parsedArgs, url, progressBar);
 				handlers.Add(handler);
 			}
@@ -115,8 +123,14 @@ namespace YTDownloader
 					case OutputType.Video:
 						await DownloadVideo(streams, parsedArgs);
 						break;
+					case OutputType.Both:
+						//var audioTask = DownloadAudio(streams, videoUrl);
+						await DownloadVideo(streams, parsedArgs);
+						Console.WriteLine("Extracting audio from video");
+						await ExtractAudio(streams, parsedArgs);
+						break;
 					default:
-						WriteError($"Unsupported type: {parsedArgs.OutFormat}");
+						WriteError($"Unsupported output type: {parsedArgs.OutFormat}");
 						break;
 				}
 			}
@@ -129,6 +143,17 @@ namespace YTDownloader
 				progressBar.Refresh(++MainProgressBarCounter, MainProgressBarDescription);
 
 			return result;
+		}
+
+		private static async Task ExtractAudio(YouTubeVideo[] streams, Arguments parsedArgs)
+		{
+			var videoOutputFileName = GetVideoOutputFileName(streams);
+			var audioOutputFileName = Path.ChangeExtension(GetAudioOutputFileName(streams), "mp3");
+
+			Console.WriteLine($"Extracting audio from video...");
+
+			var conversion = await FFmpeg.Conversions.FromSnippet.ExtractAudio(videoOutputFileName, audioOutputFileName);
+			await conversion.Start();
 		}
 
 		private async static Task<IEnumerable<YouTubeVideo>> GetStreams(string url)
@@ -176,38 +201,76 @@ namespace YTDownloader
 
 		private static void UnpackFFmpeg()
 		{
+			const string ffmpeg_win_file_name = "ffmpeg.exe";
+			const string ffprobe_win_file_name = "ffprobe.exe";
+
+			// binary files
+			const string ffmpeg_mac_file_name = "ffmpeg"; 
+			const string ffprobe_mac_file_name = "ffprobe";
+
+			//const string ffmpeg_linux_file_name = "ffmpeg.exe";
+			//const string ffprobe_linux_file_name = "ffprobe.exe";
+
 			var homeDir = new DirectoryInfo(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
 			//if ( homeDir.GetDirectories().Select(dirInfo => dirInfo.Name).Contains(AppDirectoryName) )
 			//	return;
 			var appDir = homeDir.CreateSubdirectory(AppDirectoryName);
+
+			// How can I change this to a switch?
 			if ( OperatingSystem.IsWindows() )
 			{
 				//Console.WriteLine($"Unpacking ffmpeg files to application directory {homeDir}");
 				var ffmpegDir = appDir.CreateSubdirectory(FFmpegWindowsDirectoryName);
-				if ( !(ffmpegDir.GetFiles().Select(fi => fi.Name).Contains("ffmpeg.exe") &&
-					ffmpegDir.GetFiles().Select(fi => fi.Name).Contains("ffprobe.exe") ))
+				if ( !(ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffmpeg_win_file_name) &&
+					ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffprobe_win_file_name) ))
 				{
 					Console.WriteLine($"Unpacking ffmpeg files to application directory {ffmpegDir}");
-					using ( Stream s = System.IO.File.OpenWrite(Path.Combine(ffmpegDir.FullName, "ffmpeg.exe")))
-					{
-						s.Write(Properties.Resources.ffmpeg, 0, Properties.Resources.ffmpeg.Length);
-					}
-					using ( Stream s = System.IO.File.OpenWrite(Path.Combine(ffmpegDir.FullName, "ffprobe.exe")))
-					{
-						s.Write(Properties.Resources.ffprobe, 0, Properties.Resources.ffprobe.Length);
-					}
+					System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffmpeg_win_file_name), Properties.Resources.ffmpeg_win);
+					System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffprobe_win_file_name), Properties.Resources.ffprobe_win);
+
+					FFmpeg.SetExecutablesPath(ffmpegDir.FullName);
 				}
-				FFmpeg.SetExecutablesPath(ffmpegDir.FullName);
 			}
+			// TODO: different builds for different Distros: Ubuntu, Fedora, Arch,...
 			if ( OperatingSystem.IsLinux() )
 			{
 				WriteError("Essential feature missing for this platform: ffmpeg");
 			}
 			if ( OperatingSystem.IsMacOS() )
 			{
-				WriteError("Essential feature missing for this platform: ffmpeg");
+				//WriteError("Essential feature missing for this platform: ffmpeg");
+
+				Console.WriteLine("This part has not been properly tested due to development taking place on Windows.");
+				Console.WriteLine("Proceed anyway? [y/n]");
+				ConsoleKeyInfo resp = Console.ReadKey(intercept: false);
+				if ( resp.KeyChar != 'y' )
+					WriteError("You have chosen to NOT proceed.");
+
+				var ffmpegDir = appDir.CreateSubdirectory(FFmpegMacDirectoryName);
+				if ( !(ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffmpeg_mac_file_name) &&
+					ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffprobe_mac_file_name) ))
+				{
+					Console.WriteLine($"Unpacking ffmpeg files to application directory {ffmpegDir}");
+
+					System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffmpeg_mac_file_name), Properties.Resources.ffmpeg_mac);
+					System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffprobe_mac_file_name), Properties.Resources.ffprobe_mac);
+
+					FFmpeg.SetExecutablesPath(ffmpegDir.FullName);
+				}
 			}
 		}
+
+		private static string GetVideoOutputFileName(YouTubeVideo[] streams)
+			=> GetVideoOutputFileName(streams.Where(s => s.IsVideoOnly()).First());
+
+		private static string GetVideoOutputFileName(YouTubeVideo youtubeStream)
+			=> Path.Combine( Directory.GetCurrentDirectory(), GetFileName(youtubeStream, OutputType.Video) );
+
+		private static string GetAudioOutputFileName(YouTubeVideo[] streams)
+			=> GetAudioOutputFileName(streams.Where(s => s.IsAudioOnly()).First());
+
+		private static string GetAudioOutputFileName(YouTubeVideo youtubeStream)
+			=> Path.Combine( Directory.GetCurrentDirectory(), GetFileName(youtubeStream, OutputType.Audio) );
 
 		private static async Task DownloadVideo(YouTubeVideo[] streams, Arguments parsedArgs)
 		{
@@ -245,7 +308,7 @@ namespace YTDownloader
 				await videoDownloading;
 
 				// merge using FFmpeg
-				string outputPath = Path.Combine(currDir.FullName, RemoveForbidden(videoStream.FullName));
+				string outputPath = GetVideoOutputFileName(videoStream);
 				IMediaInfo videoMediaInfo = await FFmpeg.GetMediaInfo(videoFileName);
 				IStream videoMediaStream = videoMediaInfo.VideoStreams.FirstOrDefault()
 					?.SetCodec(VideoCodec.h264);
@@ -265,14 +328,6 @@ namespace YTDownloader
 					)
 					.SetOutputFormat(Format.mp4)
 					.SetOutput( outputPath );
-				//conversion.OnProgress += (sender, args) =>
-				//{
-				//	var percent = (int)(Math.Round(args.Duration.TotalSeconds / args.TotalLength.TotalSeconds, 2) * 100);
-				//	//Console.WriteLine($"Total: {args.Duration.TotalSeconds}");
-				//	Console.SetCursorPosition(0, Console.CursorTop);
-				//	Console.WriteLine($"[{args.Duration} / {args.TotalLength}] {percent}%\r");
-				//	//progressBar.Refresh( (int)Math.Floor(args.Duration.TotalSeconds), conversion_desc);
-				//};
 				var conversionResult = await conversion.Start();
 
 				//var conversion = await FFmpeg.Conversions.FromSnippet.AddAudio(videoFileName, audioFileName, outputPath);
@@ -464,19 +519,24 @@ namespace YTDownloader
 
 			if ( parser.TryParse(args, argsObj))
 			{
-				string[] formats = new[]{"audio", "video"};
+				var formats = (IList<OutputType>)Enum.GetValues(typeof(OutputType));
+				var dict = formats.ToDictionary(outType => outType.ToString().ToLower());
+				//.Select(f => f.ToLower())
+
+				//foreach (var kvPair in dict)
+				//{
+				//	Console.WriteLine($"{kvPair.Key} -> {kvPair.Value}");
+				//}
+					
 				// custom constraints
-				if ( !formats.Contains(argsObj.Format))
+				if ( !dict.ContainsKey(argsObj.Format.ToLower()))
 				{
 					WriteError($"Invalid format: '{argsObj.Format}'");
 					// unreachable
 					return null;
 				}
 
-				if (argsObj.Format == formats[0])
-					argsObj.OutFormat = OutputType.Audio;
-				if (argsObj.Format == formats[1])
-					argsObj.OutFormat = OutputType.Video;
+				argsObj.OutFormat = dict[argsObj.Format];
 				
 				if ( ( argsObj.Url is null && argsObj.Playlist is null ) || 
 					( !(argsObj.Url is null) && !(argsObj.Playlist is null) )) // --help (if required arg is null)

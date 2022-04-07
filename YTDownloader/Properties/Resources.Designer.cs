@@ -63,9 +63,9 @@ namespace YTDownloader.Properties {
         /// <summary>
         ///   Looks up a localized resource of type System.Byte[].
         /// </summary>
-        internal static byte[] ffmpeg {
+        internal static byte[] ffmpeg_mac {
             get {
-                object obj = ResourceManager.GetObject("ffmpeg", resourceCulture);
+                object obj = ResourceManager.GetObject("ffmpeg_mac", resourceCulture);
                 return ((byte[])(obj));
             }
         }
@@ -73,9 +73,29 @@ namespace YTDownloader.Properties {
         /// <summary>
         ///   Looks up a localized resource of type System.Byte[].
         /// </summary>
-        internal static byte[] ffprobe {
+        internal static byte[] ffmpeg_win {
             get {
-                object obj = ResourceManager.GetObject("ffprobe", resourceCulture);
+                object obj = ResourceManager.GetObject("ffmpeg_win", resourceCulture);
+                return ((byte[])(obj));
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized resource of type System.Byte[].
+        /// </summary>
+        internal static byte[] ffprobe_mac {
+            get {
+                object obj = ResourceManager.GetObject("ffprobe_mac", resourceCulture);
+                return ((byte[])(obj));
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized resource of type System.Byte[].
+        /// </summary>
+        internal static byte[] ffprobe_win {
+            get {
+                object obj = ResourceManager.GetObject("ffprobe_win", resourceCulture);
                 return ((byte[])(obj));
             }
         }
