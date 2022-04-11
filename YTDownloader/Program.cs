@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 //using Konsole;
 using Xabe.FFmpeg;
+using Xabe.FFmpeg.Downloader;
 using System.Net.Http;
 using VideoLibrary.Exceptions;
 using TagLib;
@@ -28,6 +29,8 @@ namespace YTDownloader
 		const string FFmpegLinuxDirectoryName = "ffmpeg_linux";
 		const string FFmpegMacDirectoryName = "ffmpeg_mac";
 
+		const string AudioOutputFormat = "mp3";
+
 		static int MainProgressBarCounter = 0;
 		static readonly string MainProgressBarDescription = "Downloading playlist";
 
@@ -35,7 +38,7 @@ namespace YTDownloader
 		static async Task Main(string[] args)
 		{
 			// unpack ffmpeg executables
-			UnpackFFmpeg();
+			await UnpackFFmpeg();
 
 			Arguments parsedArgs = getArgs(args);
 
@@ -62,21 +65,51 @@ namespace YTDownloader
 			else if (parsedArgs.Url is not null)
 			{
 				urls.Add(parsedArgs.Url);
+				//foreach (var url in parsedArgs.Url)
+				//{
+				//	urls.Add(url);
+				//}
 			}
 
 			//Console.WriteLine("Starting downloads...");
 
-			bool showPlaylistProgressBar = urls.Count > 1;
-			ProgressBar progressBar = null;
-			if ( showPlaylistProgressBar)
+			var handlers = new List<Task<string>>();
+			List<Task<IEnumerable<YouTubeVideo>>> streamGetters = new List<Task<IEnumerable<YouTubeVideo>>>();
+			for (int i = 0; i < urls.Count; i++)
 			{
-				progressBar = new ProgressBar(urls.Count);
+				var url = urls[i];
+				streamGetters.Add( GetStreams(url) );
+			}
+			Task.WaitAll(streamGetters.ToArray());
+
+			var data = new List<(string url, IList<YouTubeVideo> streams)>();
+
+			for (int i = 0; i < urls.Count; i++)
+			{
+				var url = urls[i];
+				try
+				{
+					IList<YouTubeVideo> streams = (await streamGetters[i]).ToArray();
+					if ( streams.Any() )
+						data.Add( (url, streams) );
+				}
+				catch (Exception)
+				{
+					Console.Error.WriteLine($"Stream is unavailable for {url}.");
+					//WriteError();
+					continue;
+				}
+			}
+
+			bool showPlaylistProgressBar = data.Count > 1;
+			ProgressBar progressBar = null;
+			if ( showPlaylistProgressBar )
+			{
+				progressBar = new ProgressBar(data.Count);
 				progressBar.Refresh(MainProgressBarCounter, MainProgressBarDescription);
 			}
-			var handlers = new List<Task<string>>();
-			foreach (var url in urls)
+			foreach ((string url, var streams) in data)
 			{
-				YouTubeVideo[] streams = (await GetStreams(url)).ToArray();
 				var handler = HandleDownload(streams, parsedArgs, url, progressBar);
 				handlers.Add(handler);
 			}
@@ -102,27 +135,56 @@ namespace YTDownloader
 			Console.WriteLine("Download completed.");
 		}
 
-		private static async Task<string> HandleDownload(YouTubeVideo[] streams, Arguments parsedArgs, string videoUrl, ProgressBar progressBar)
+		private static async Task<string> HandleDownload(IList<YouTubeVideo> streams, Arguments parsedArgs, string videoUrl, ProgressBar progressBar)
 		{
 			string result = null;
+			bool masterProgressBarPresent = progressBar != null;
 			try
 			{
-				switch (parsedArgs.OutFormat)
+				switch (parsedArgs.OutType)
 				{
 					case OutputType.Audio:
-						await DownloadAudio(streams, videoUrl);
+						//await DownloadAudio(streams, videoUrl, masterProgressBarPresent);
+						{
+							await DownloadVideo(streams, parsedArgs, masterProgressBarPresent);
+							await ExtractAudio(streams, parsedArgs, masterProgressBarPresent);
+							var videoFile = new FileInfo(GetFileName(streams[0], OutputType.Video));
+							videoFile.Delete();
+							var audioFile = new FileInfo(
+								Path.ChangeExtension(
+									GetFileName(streams[0], OutputType.Audio),
+									AudioOutputFormat)
+								);
+							await AddMetadata(videoUrl, audioFile.FullName, streams[0], masterProgressBarPresent);
+						}
 						break;
 					case OutputType.Video:
-						await DownloadVideo(streams, parsedArgs);
+						await DownloadVideo(streams, parsedArgs, masterProgressBarPresent);
+						break;
+					case OutputType.Both:
+						{
+							//var audioTask = DownloadAudio(streams, videoUrl, masterProgressBarPresent);
+							var videoTask = DownloadVideo(streams, parsedArgs, masterProgressBarPresent);
+
+							await videoTask;
+							//Task.WaitAll(new[] { audioTask, videoTask });
+							await ExtractAudio(streams, parsedArgs, masterProgressBarPresent);
+							var audioFile = new FileInfo(
+								Path.ChangeExtension(
+									GetFileName(streams[0], OutputType.Audio),
+									AudioOutputFormat)
+								);
+							await AddMetadata(videoUrl, audioFile.FullName, streams[0], masterProgressBarPresent);
+						}
 						break;
 					default:
-						WriteError($"Unsupported type: {parsedArgs.OutFormat}");
+						WriteError($"Unsupported output type: {parsedArgs.OutType}");
 						break;
 				}
 			}
 			catch (Exception e)
 			{
-				result = $"Youtube url: {streams[0].Info.Title}, message: {e.Message}";
+				result = $"Unknown error for url {videoUrl}\nMessage:\n{e.Message}\nStacktrace:\n{e.StackTrace}";
 			}
 
 			if ( progressBar is not null )
@@ -131,25 +193,75 @@ namespace YTDownloader
 			return result;
 		}
 
+		private static async Task AddMetadata(string youtubeUrl, string fullName, YouTubeVideo stream, bool masterProgressBarPresent)
+		{
+			if ( !masterProgressBarPresent )
+				Console.WriteLine("Adding metadata");
+
+			var author = stream.Info.Author;
+			var title = stream.Info.Title;
+			var tfile = TagLib.File.Create(fullName);
+			try
+			{
+				tfile.Tag.Performers = new string[] { author };
+				tfile.Tag.Title = title;
+				byte[] thumbnailArr = await GetThumbnail( youtubeUrl );
+				//System.IO.File.WriteAllBytes("thumbnail.jpg", thumbnailArr);
+				ByteVector pictureData = new ByteVector( thumbnailArr );
+				var cover = new TagLib.Id3v2.AttachedPictureFrame
+				{
+					Type = PictureType.FrontCover,
+					Description = "Cover",
+					MimeType = System.Net.Mime.MediaTypeNames.Image.Jpeg,
+					Data = pictureData,
+					TextEncoding = StringType.UTF16
+				};
+				tfile.Tag.Pictures = new[] { cover };
+			}
+			finally
+			{
+				tfile.Save();
+			}
+		}
+
+		private static async Task ExtractAudio(IList<YouTubeVideo> streams, Arguments parsedArgs, bool masterProgressBarPresent)
+		{
+			var videoOutputFileName = Path.Combine(Directory.GetCurrentDirectory(), GetFileName(streams[0], OutputType.Video));
+			var audioOutputFileName = Path.Combine(Directory.GetCurrentDirectory(), GetFileName(streams[0], OutputType.Audio));
+			audioOutputFileName = Path.ChangeExtension(audioOutputFileName, AudioOutputFormat);
+
+			if ( !masterProgressBarPresent )
+				Console.WriteLine($"Extracting audio from video...");
+
+			// this needs FULL PATH, not a relative one
+			var conversion = await FFmpeg.Conversions.FromSnippet.ExtractAudio(videoOutputFileName, audioOutputFileName);
+
+			await conversion.Start();
+		}
+
 		private async static Task<IEnumerable<YouTubeVideo>> GetStreams(string url)
 		{
 			IEnumerable<YouTubeVideo> streams;
 			try
 			{
 				streams = await YouTube.Default.GetAllVideosAsync(url);
-				//streams = YouTube.Default.GetAllVideos(url).ToArray();
 				return streams;
 			}
 			catch (TimeoutException)
 			{
-				WriteError("Your internet connection timed out. Please, try again.");
-				return Array.Empty<YouTubeVideo>();
+				Console.Error.WriteLine("Your internet connection timed out. Please, try again.");
+				return Enumerable.Empty<YouTubeVideo>();
 			}
 			catch (UnavailableStreamException)
 			{
-				WriteError("This video is not publicly accessible.");
-				return Array.Empty<YouTubeVideo>();
+				Console.Error.WriteLine("This video is not publicly accessible.");
+				return Enumerable.Empty<YouTubeVideo>();
 			}
+			catch (Exception e)
+			{
+				Console.Error.WriteLine($"Error \"{e.Message}\" occurred on getting streams from \"{url}\"");
+			}
+			return Enumerable.Empty<YouTubeVideo>();
 		}
 
 		private static async Task<bool> IsServerRunning()
@@ -174,47 +286,109 @@ namespace YTDownloader
 			return playlistData;
 		}
 
-		private static void UnpackFFmpeg()
+		private static async Task UnpackFFmpeg()
 		{
+			const string ffmpeg_win_file_name = "ffmpeg.exe";
+			const string ffprobe_win_file_name = "ffprobe.exe";
+
+			//// binary files
+			const string ffmpeg_mac_file_name = "ffmpeg";
+			const string ffprobe_mac_file_name = "ffprobe";
+
+			const string ffmpeg_linux_file_name = "ffmpeg";
+			const string ffprobe_linux_file_name = "ffprobe";
+
 			var homeDir = new DirectoryInfo(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
 			//if ( homeDir.GetDirectories().Select(dirInfo => dirInfo.Name).Contains(AppDirectoryName) )
 			//	return;
 			var appDir = homeDir.CreateSubdirectory(AppDirectoryName);
+
+			// How can I change this to a switch?
 			if ( OperatingSystem.IsWindows() )
 			{
 				//Console.WriteLine($"Unpacking ffmpeg files to application directory {homeDir}");
 				var ffmpegDir = appDir.CreateSubdirectory(FFmpegWindowsDirectoryName);
-				if ( !(ffmpegDir.GetFiles().Select(fi => fi.Name).Contains("ffmpeg.exe") &&
-					ffmpegDir.GetFiles().Select(fi => fi.Name).Contains("ffprobe.exe") ))
+				if ( !(ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffmpeg_win_file_name) &&
+					ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffprobe_win_file_name)) )
 				{
 					Console.WriteLine($"Unpacking ffmpeg files to application directory {ffmpegDir}");
-					using ( Stream s = System.IO.File.OpenWrite(Path.Combine(ffmpegDir.FullName, "ffmpeg.exe")))
-					{
-						s.Write(Properties.Resources.ffmpeg, 0, Properties.Resources.ffmpeg.Length);
-					}
-					using ( Stream s = System.IO.File.OpenWrite(Path.Combine(ffmpegDir.FullName, "ffprobe.exe")))
-					{
-						s.Write(Properties.Resources.ffprobe, 0, Properties.Resources.ffprobe.Length);
-					}
+					var currDir = Directory.GetCurrentDirectory();
+					Directory.SetCurrentDirectory(ffmpegDir.FullName);
+					await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official);
+					Directory.SetCurrentDirectory(currDir);
+					//System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffmpeg_win_file_name), Properties.Resources.ffmpeg_win);
+					//System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffprobe_win_file_name), Properties.Resources.ffprobe_win);
+
 				}
 				FFmpeg.SetExecutablesPath(ffmpegDir.FullName);
 			}
+			// TODO: different builds for different Distros: Ubuntu, Fedora, Arch,...
 			if ( OperatingSystem.IsLinux() )
 			{
-				WriteError("Essential feature missing for this platform: ffmpeg");
+				Console.WriteLine("This part has not been properly tested on Linux due to development taking place on Windows.");
+				Console.WriteLine("Proceed anyway? [y/n]");
+				ConsoleKeyInfo resp = Console.ReadKey(intercept: false);
+				if ( resp.KeyChar != 'y' )
+					WriteError("You have chosen to NOT proceed.");
+
+				//Console.WriteLine($"Unpacking ffmpeg files to application directory {homeDir}");
+				var ffmpegDir = appDir.CreateSubdirectory(FFmpegWindowsDirectoryName);
+				if ( !(ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffmpeg_linux_file_name) &&
+					ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffprobe_linux_file_name)) )
+				{
+					Console.WriteLine($"Unpacking ffmpeg files to application directory {ffmpegDir}");
+					var currDir = Directory.GetCurrentDirectory();
+					Directory.SetCurrentDirectory(ffmpegDir.FullName);
+					await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official);
+					Directory.SetCurrentDirectory(currDir);
+					//System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffmpeg_win_file_name), Properties.Resources.ffmpeg_win);
+					//System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffprobe_win_file_name), Properties.Resources.ffprobe_win);
+
+				}
+				FFmpeg.SetExecutablesPath(ffmpegDir.FullName);
 			}
 			if ( OperatingSystem.IsMacOS() )
 			{
-				WriteError("Essential feature missing for this platform: ffmpeg");
+				//WriteError("Essential feature missing for this platform: ffmpeg");
+
+				Console.WriteLine("This part has not been properly tested on MacOS due to development taking place on Windows.");
+				Console.WriteLine("Proceed anyway? [y/n]");
+				ConsoleKeyInfo resp = Console.ReadKey(intercept: false);
+				if ( resp.KeyChar != 'y' )
+					WriteError("You have chosen to NOT proceed.");
+
+				var ffmpegDir = appDir.CreateSubdirectory(FFmpegMacDirectoryName);
+				if ( !(ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffmpeg_mac_file_name) &&
+					ffmpegDir.GetFiles().Select(fi => fi.Name).Contains(ffprobe_mac_file_name) ))
+				{
+					Console.WriteLine($"Unpacking ffmpeg files to application directory {ffmpegDir}");
+					await FFmpegDownloader.GetLatestVersion(FFmpegVersion.Official);
+					//System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffmpeg_mac_file_name), Properties.Resources.ffmpeg_mac);
+					//System.IO.File.WriteAllBytes(Path.Combine(ffmpegDir.FullName, ffprobe_mac_file_name), Properties.Resources.ffprobe_mac);
+
+				}
+				FFmpeg.SetExecutablesPath(ffmpegDir.FullName);
 			}
 		}
 
-		private static async Task DownloadVideo(YouTubeVideo[] streams, Arguments parsedArgs)
+		private static string GetVideoOutputFileName(IList<YouTubeVideo> streams)
+			=> GetVideoOutputFileName(streams.Where(s => s.IsVideoOnly()).First());
+
+		private static string GetVideoOutputFileName(YouTubeVideo youtubeStream)
+			=> Path.Combine( Directory.GetCurrentDirectory(), GetFileName(youtubeStream, OutputType.Video) );
+
+		private static string GetAudioOutputFileName(IList<YouTubeVideo> streams)
+			=> GetAudioOutputFileName(streams.Where(s => s.IsAudioOnly()).First());
+
+		private static string GetAudioOutputFileName(YouTubeVideo youtubeStream)
+			=> Path.Combine( Directory.GetCurrentDirectory(), GetFileName(youtubeStream, OutputType.Audio) );
+
+		private static async Task DownloadVideo(IList<YouTubeVideo> streams, Arguments parsedArgs, bool masterProgressBarPresent)
 		{
 			const int FullHD = 1080;
 			if ( parsedArgs.Progressive || parsedArgs.MaxResolution < FullHD )
 			{
-				await DownloadProgressiveVideo(streams);
+				await DownloadProgressiveVideo(streams, masterProgressBarPresent);
 				return;
 			}
 
@@ -232,20 +406,20 @@ namespace YTDownloader
 					.First();
 				var audioFileName = Path.Combine(".", subDir.Name, $"audio.{audioStream.AudioFormat.ToString().ToLower()}");
 				//Console.WriteLine($"Downloading audio with bitrate {audioStream.AudioBitrate} ...");
-				var audioDownloading = Download(audioStream, audioFileName);
+				var audioDownloading = Download(audioStream, audioFileName, masterProgressBarPresent);
 				// download video
 				var videoStream = streams.Where(s => s.IsVideoOnly() && s.Resolution <= parsedArgs.MaxResolution)
 					.OrderByDescending(s => s.Resolution)
 					.First();
 				var videoFileName = Path.Combine(".", subDir.Name, $"video.{videoStream.Format.ToString().ToLower()}");
 				//Console.WriteLine($"Downloading video with resolution {videoStream.Resolution} ...");
-				var videoDownloading = Download(videoStream, videoFileName);
+				var videoDownloading = Download(videoStream, videoFileName, masterProgressBarPresent);
 				
 				await audioDownloading;
 				await videoDownloading;
 
 				// merge using FFmpeg
-				string outputPath = Path.Combine(currDir.FullName, RemoveForbidden(videoStream.FullName));
+				string outputPath = GetFileName(videoStream, OutputType.Video);
 				IMediaInfo videoMediaInfo = await FFmpeg.GetMediaInfo(videoFileName);
 				IStream videoMediaStream = videoMediaInfo.VideoStreams.FirstOrDefault()
 					?.SetCodec(VideoCodec.h264);
@@ -256,23 +430,20 @@ namespace YTDownloader
 
 				//var cut_video_title = videoStream.Info.Title.Length > 20 ? videoStream.Info.Title.Substring(0, 20) : videoStream.Info.Title;
 				var conversion_desc = $"Converting to MP4";
-				var progressBar = new ProgressBarSlim((int)videoMediaInfo.Size);
-				progressBar.Refresh(0, conversion_desc);
+				ProgressBarSlim progressBar = null;
+				if ( !masterProgressBarPresent )
+				{
+					progressBar = new ProgressBarSlim((int)videoMediaInfo.Size);
+					progressBar.Refresh(0, conversion_desc);
+				}
 				var conversion = FFmpeg.Conversions.New()
 					.AddStream(
 						videoMediaStream,
 						audioMediaStream
 					)
 					.SetOutputFormat(Format.mp4)
+					.SetOverwriteOutput(overwrite: true)
 					.SetOutput( outputPath );
-				//conversion.OnProgress += (sender, args) =>
-				//{
-				//	var percent = (int)(Math.Round(args.Duration.TotalSeconds / args.TotalLength.TotalSeconds, 2) * 100);
-				//	//Console.WriteLine($"Total: {args.Duration.TotalSeconds}");
-				//	Console.SetCursorPosition(0, Console.CursorTop);
-				//	Console.WriteLine($"[{args.Duration} / {args.TotalLength}] {percent}%\r");
-				//	//progressBar.Refresh( (int)Math.Floor(args.Duration.TotalSeconds), conversion_desc);
-				//};
 				var conversionResult = await conversion.Start();
 
 				//var conversion = await FFmpeg.Conversions.FromSnippet.AddAudio(videoFileName, audioFileName, outputPath);
@@ -289,27 +460,61 @@ namespace YTDownloader
 			}
 		}
 
-		private static async Task DownloadProgressiveVideo(YouTubeVideo[] streams)
+		private static async Task DownloadProgressiveVideo(IList<YouTubeVideo> streams, bool masterProgressBarPresent)
 		{
-			var bestProgressive = streams.Where(s => IsProgressive(s))
+			var bestProgressive = streams.Where(s => s.IsProgressive())
+					.Where(s => s.Format == VideoFormat.Mp4)
 					.OrderByDescending(s => s.Resolution)
 					.First();
 			var fileName = GetFileName(bestProgressive, OutputType.Video);
-			await Download(bestProgressive, fileName);
+			await Download(bestProgressive, fileName, masterProgressBarPresent);
 		}
 
-		private static async Task DownloadAudio(YouTubeVideo[] streams, string youtubeUrl)
+		private static async Task DownloadAudio(IList<YouTubeVideo> streams, string youtubeUrl, bool masterProgressBarPresent)
 		{
-			var stream = streams.Where(s => s.IsAudioOnly())
-				.OrderByDescending(s => s.AudioBitrate)
+			// download video, then extract audio from it (faster than only downloading audio)
+			var stream = streams.Where(s => s.IsProgressive())
+				.OrderBy(s => s.Resolution)
 				.First();
-			var fileName = GetFileName(stream, OutputType.Audio);
-			await Download(stream, fileName);
-			// convert to mp3
-			var convertedFileName = await ConvertAudio(fileName);
+			var videoFileName = GetFileName(stream, OutputType.Video).Replace(' ', '_');
+			var audioFileName = GetFileName(stream, OutputType.Audio).Replace(' ', '_');
+			audioFileName = audioFileName.Remove(audioFileName.Length - 3) +"mp3";
+			await Download(stream, videoFileName, masterProgressBarPresent);
+
+			Console.WriteLine($"Extracting audio from {videoFileName} to {audioFileName}");
+
+			IMediaInfo videoMediaInfo = await FFmpeg.GetMediaInfo(videoFileName);
+			IStream audioMediaStream = videoMediaInfo.AudioStreams.FirstOrDefault()
+				?.SetCodec(AudioCodec.aac);
+
+			var conversion = FFmpeg.Conversions.New()
+				.AddStream(audioMediaStream)
+				.SetOutput(audioFileName)
+				.SetOutputFormat(Format.mp3)
+				.SetOverwriteOutput(overwrite: true);
+
+			//var conversion = await FFmpeg.Conversions.FromSnippet.ExtractAudio(videoFileName, audioFileName);
+			////var conversion = await FFmpeg.Conversions.New()
+			//conversion.SetOverwriteOutput(overwrite: true)
+			//	.SetOutput(audioFileName)
+			//	.SetOutputFormat(Format.mp3);
+				
+			var conversionResult = await conversion.Start();
+
+			//var convertedFileName = audioFileName;
+
+			//var fileName = GetFileName(stream, OutputType.Audio);
+			//await Download(stream, fileName);
+			//// convert to mp3
+			var convertedFileName = await ConvertAudio(audioFileName);
+
 			// remove previous version
-			var previousFile = new FileInfo(fileName);
-			previousFile.Delete();
+			//var previousFile = new FileInfo(fileName);
+			{
+				var previousFile = new FileInfo(videoFileName);
+				previousFile.Delete();
+			}
+
 			// add metadata from Youtube
 			//Console.WriteLine("Writing metadata...");
 			var author = stream.Info.Author;
@@ -366,15 +571,21 @@ namespace YTDownloader
 			return outputPath;
 		}
 
-		static async Task Download(YouTubeVideo stream, string fileName)
+		static async Task Download(YouTubeVideo stream, string fileName, bool masterProgressBarPresent)
 		{
 			var contentLength = stream.ContentLength ?? int.MaxValue;
+			contentLength = contentLength <= 0 ? int.MaxValue : contentLength;
 
 			int descConst = 30;
 			var fileNameNoExt = Path.GetFileNameWithoutExtension(fileName);
 			var desc = $"{fileNameNoExt.Substring(0, fileNameNoExt.Length < descConst ? fileNameNoExt.Length : descConst)}";
-			var konsoleProgressBar = new ProgressBarSlim((int)contentLength);
-			konsoleProgressBar.Refresh(0, desc);
+			ProgressBarSlim konsoleProgressBar = null;
+			if ( !masterProgressBarPresent )
+			{
+				konsoleProgressBar = new ProgressBarSlim((int)contentLength);
+				konsoleProgressBar.Refresh(0, desc);
+
+			}
 			const int KB = (1 << 10);
 			const int MB = (1 << 20);
 			int bufferSize = 2 * MB;
@@ -386,7 +597,9 @@ namespace YTDownloader
 				while ( (bytesRead = await YTStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
 				{
 					await outFileStream.WriteAsync(buffer, 0, bytesRead);
-					konsoleProgressBar.Refresh( konsoleProgressBar.Current + bytesRead, desc );
+
+					if ( !masterProgressBarPresent )
+						konsoleProgressBar.Refresh( konsoleProgressBar.Current + bytesRead, desc );
 				}
 			}
 		}
@@ -407,25 +620,18 @@ namespace YTDownloader
 			switch (outType)
 			{
 				case OutputType.Audio:
-					return RemoveForbidden(video.FullName) + '.' + video.AudioFormat.ToString().ToLower();
+					var name = RemoveForbidden(video.FullName);
+					return Path.ChangeExtension(name, video.AudioFormat.ToString().ToLower()).Replace(' ', '_');
 				case OutputType.Video:
-					return RemoveForbidden(video.FullName);
+					return RemoveForbidden(video.FullName).Replace(' ', '_');
 				default:
 					throw new ArgumentException("Invalid format wanted.");
 			}
 		}
 
-		//static bool IsAudioOnly(YouTubeVideo video) =>
-		//	video.Format == VideoFormat.Unknown &&
-		//		video.AudioFormat != AudioFormat.Unknown;
-		
-		//static bool IsVideoOnly(YouTubeVideo video) =>
-		//	video.Format == VideoFormat.Mp4 //video.Format != VideoFormat.Unknown 
-		//		&& video.AudioFormat == AudioFormat.Unknown;
-
 		static YouTubeVideo GetStream(YouTubeVideo[] streams, Arguments args)
 		{
-			switch (args.OutFormat)
+			switch (args.OutType)
 			{
 				case OutputType.Audio:
 					return streams.Where(s => s.IsAudioOnly())
@@ -433,7 +639,7 @@ namespace YTDownloader
 						.First();
 				case OutputType.Video:
 					if (args.Progressive)
-						return streams.Where(s => IsProgressive(s))
+						return streams.Where(s => s.IsProgressive())
 							.OrderByDescending(v => v.Resolution)
 							.First();
 
@@ -444,17 +650,9 @@ namespace YTDownloader
 					//// unreachable code
 					//return null;
 				default:
-					throw new ArgumentException($"Invalid format: {args.OutFormat}.");
+					throw new ArgumentException($"Invalid format: {args.OutType}.");
 			}
 		}
-
-		/// <summary>
-		/// Contains both audio AND video.
-		/// </summary>
-		/// <param name="video">Youtube Video</param>
-		/// <returns></returns>
-		static bool IsProgressive(YouTubeVideo video) => 
-			(int)video.AudioFormat < 3 && (int)video.Format < 2;
 
 		static Arguments getArgs(string[] args)
 		{
@@ -464,24 +662,29 @@ namespace YTDownloader
 
 			if ( parser.TryParse(args, argsObj))
 			{
-				string[] formats = new[]{"audio", "video"};
+				var formats = (IList<OutputType>)Enum.GetValues(typeof(OutputType));
+				var dict = formats.ToDictionary(outType => outType.ToString().ToLower());
+				//.Select(f => f.ToLower())
+
+				//foreach (var kvPair in dict)
+				//{
+				//	Console.WriteLine($"{kvPair.Key} -> {kvPair.Value}");
+				//}
+					
 				// custom constraints
-				if ( !formats.Contains(argsObj.Format))
+				if ( !dict.ContainsKey(argsObj.Format.ToLower()))
 				{
 					WriteError($"Invalid format: '{argsObj.Format}'");
 					// unreachable
 					return null;
 				}
 
-				if (argsObj.Format == formats[0])
-					argsObj.OutFormat = OutputType.Audio;
-				if (argsObj.Format == formats[1])
-					argsObj.OutFormat = OutputType.Video;
+				argsObj.OutType = dict[argsObj.Format];
 				
-				if ( ( argsObj.Url is null && argsObj.Playlist is null ) || 
-					( !(argsObj.Url is null) && !(argsObj.Playlist is null) )) // --help (if required arg is null)
+				if ( !(argsObj.Url is not null ^ argsObj.Playlist is not null) ) // --help (if required arg is null)
 				{
 					WriteError("Exactly one of flags -u/--url and -p/--playlist has to contain value.\nPlease, try again.");
+					// unreachable
 					return null;
 				}
 
