@@ -8,4 +8,5 @@ It also supports downloading of playlists under *-p/--playlist* command-line fla
 
 You can see all flags using flag *--help*.
 
-It requires **.NET 5** framework to run.
+It requires **.NET 5+** framework to run.
+If you want to run this project with **.NET 6**, you will need to change tag *Project > PropertyGroup > TargetFramework* in file *YTDownloader.csproj* to *net6.0*.
