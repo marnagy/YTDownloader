@@ -15,5 +15,7 @@ namespace YTDownloader
 		public static bool IsVideoOnly(this YouTubeVideo video)
 			=> video.Format == VideoFormat.Mp4
 				&& video.AudioFormat == AudioFormat.Unknown;
+		public static bool IsProgressive(this YouTubeVideo video) => 
+			video.AudioFormat != AudioFormat.Unknown && video.Format != VideoFormat.Unknown;
 	}
 }

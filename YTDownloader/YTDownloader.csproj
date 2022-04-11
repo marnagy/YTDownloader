@@ -6,10 +6,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="ffmpeg-2022-01-27-git-3c831847a8-full_build\bin\ffplay.exe" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="clipr" Version="2.0.0-beta" />
     <PackageReference Include="Goblinfactory.ProgressBar" Version="1.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />

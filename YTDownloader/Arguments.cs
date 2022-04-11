@@ -21,7 +21,7 @@ namespace YTDownloader
 		public bool Progressive { get; set; } = true;
 		[NamedArgument('m', "max_resolution", Action = ParseAction.Store, Const = 1080, NumArgs = 1, Constraint = NumArgsConstraint.Exactly, Description = "Maximal resolution to download video in.")]
 		public int MaxResolution { get; set; } = 1080;
-		public OutputType OutFormat { get; set; }
+		public OutputType OutType { get; set; }
 		public override string ToString()
 		{
 			return JsonConvert.SerializeObject(this);

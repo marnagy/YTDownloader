@@ -363,3 +363,7 @@ MigrationBackup/
 FodyWeavers.xsd
 /YTDownloader/ffmpeg-2022-01-27-git-3c831847a8-full_build
 /YTDownloader/ffmpeg-2022-01-27-git-3c831847a8-full_build.7z
+/YTDownloader/ffmpeg_2022-01-27_win-from-git/doc
+/YTDownloader/ffmpeg_2022-01-27_win-from-git/presets
+/YTDownloader/ffmpeg_2022-01-27_win-from-git/README.txt
+/YTDownloader/ffmpeg_2022-01-27_win-from-git/LICENSE
