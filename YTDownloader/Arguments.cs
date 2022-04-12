@@ -19,8 +19,12 @@ namespace YTDownloader
 		public string Format { get; set; } = "audio";
 		[NamedArgument('d', "development", Action = ParseAction.StoreFalse, Const = true, NumArgs = 1, Constraint = NumArgsConstraint.Optional, Description = "Download video over 1080p.")]
 		public bool Progressive { get; set; } = true;
-		[NamedArgument('m', "max_resolution", Action = ParseAction.Store, Const = 1080, NumArgs = 1, Constraint = NumArgsConstraint.Exactly, Description = "Maximal resolution to download video in.")]
+		[NamedArgument('m', "max-resolution", Action = ParseAction.Store, Const = 1080, NumArgs = 1, Constraint = NumArgsConstraint.Exactly, Description = "Maximal resolution to download video in.")]
 		public int MaxResolution { get; set; } = 1080;
+		[NamedArgument("max-quality", Action = ParseAction.StoreTrue, Description = "Download max quality audio (slower download)")]
+		public bool MaxQuality { get; set; } = false;
+		[NamedArgument("visualization", Action = ParseAction.StoreTrue, Description = "Produce video of audio visualization.")]
+		public bool AddVisualization { get; set; } = false;
 		public OutputType OutType { get; set; }
 		public override string ToString()
 		{
