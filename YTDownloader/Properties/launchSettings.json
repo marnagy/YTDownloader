@@ -2,7 +2,7 @@
   "profiles": {
     "YTDownloader": {
       "commandName": "Project",
-      "commandLineArgs": "-u \"https://youtu.be/UPuBA99RsTM\""
+      "commandLineArgs": "-u \"https://youtu.be/Ywq6FMLbWH4\" --visualization"
     }
   }
 }
