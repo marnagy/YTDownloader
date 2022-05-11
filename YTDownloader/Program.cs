@@ -160,11 +160,8 @@ namespace YTDownloader
 					case OutputType.Audio:
 						//await DownloadAudio(streams, videoUrl, masterProgressBarPresent);
 						{
-							var audioFile = new FileInfo(
-								Path.ChangeExtension(
-									GetFileName( GetStream(streams, parsedArgs), OutputType.Audio),
-									AudioOutputFormat)
-								);
+							var filename = GetFileName( GetStream(streams, parsedArgs), OutputType.Audio);
+							var audioFile = new FileInfo(Path.ChangeExtension(filename, AudioOutputFormat));
 							if ( parsedArgs.MaxQuality )
 							{
 								(var audioFileName, var stream) = await DownloadAudioOnly(streams, videoUrl, parsedArgs, masterProgressBarPresent);
@@ -244,17 +241,26 @@ namespace YTDownloader
 				.VisualiseAudio(audioFile.FullName, visualize, VideoSize.Hd720,
 				pixelFormat: PixelFormat.rgb24,
 				mode: VisualisationMode.line, amplitudeScale: AmplitudeScale.log, frequencyScale: FrequencyScale.log);
-			conversion.SetFrameRate(60f)
+			conversion.SetFrameRate(30f)
 				.SetOverwriteOutput(true)
 				//.UseMultiThread(true)
 				.SetOutputFormat(Format.mp4);
+			ProgressBar progressBar = null;
 			if ( !masterProgressBarPresent)
 			{
-				conversion.OnProgress += async (sender, args) =>
+				string desc = "Creating visualization";
+				progressBar = new ProgressBar(PbStyle.SingleLine, 1, textWidth: desc.Length + 1, '#');
+				conversion.OnProgress += (sender, args) =>
 				{
 					//Show all output from FFmpeg to console
-					Console.CursorLeft = 0;
-					await Console.Out.WriteAsync($"Creating visualization [{args.Duration}/{args.TotalLength}][{args.Percent}%]");
+					if ( masterProgressBarPresent )
+						return;
+
+					//Console.CursorLeft = 0;
+					progressBar.Max = (int)args.TotalLength.TotalMilliseconds;
+					progressBar.Refresh((int)args.Duration.TotalMilliseconds, format: desc);
+
+					//await Console.Out.WriteAsync($"Creating visualization [{args.Duration}/{args.TotalLength}][{args.Percent}%]");
 				};
 			}
 			//Console.WriteLine($"Build command: { conversion.Build() }");
@@ -632,19 +638,22 @@ namespace YTDownloader
 			using ( var outFileStream = System.IO.File.OpenWrite(fileName))
 			{
 				int bytesRead;
-				while ( (bytesRead = await YTStream.ReadAsync(buffer)) > 0)
+				while ( (bytesRead = await YTStream.ReadAsync(buffer, 0, bufferSize)) > 0)
 				{
-					await outFileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
+					await outFileStream.WriteAsync(buffer, 0, bytesRead);
 
 					if ( !masterProgressBarPresent )
+					{
 						konsoleProgressBar.Refresh( konsoleProgressBar.Current + bytesRead, desc );
+					}
 				}
+
 			}
 		}
 
 		static string RemoveForbidden(string name)
 		{
-			char[] forbidden = new[] { '/', '\\', '|' };
+			char[] forbidden = new[] { '/', '\\', '|', ':', ' ' };
 			var sb = new StringBuilder();
 			foreach (var c in name.Select(c => c <= 126 && c >= 32 && !forbidden.Contains(c) ? c : '_' ))
 			{
@@ -660,7 +669,7 @@ namespace YTDownloader
 			{
 				case OutputType.Audio:
 					name = RemoveForbidden(video.FullName);
-					return Path.ChangeExtension(name, video.AudioFormat.ToString().ToLower()).Replace(' ', '_');
+					return $"{name}.{video.AudioFormat.ToString().ToLower()}".Replace(' ', '_');
 				case OutputType.Video:
 					name = RemoveForbidden(video.FullName);
 					return name.Replace(' ', '_');
