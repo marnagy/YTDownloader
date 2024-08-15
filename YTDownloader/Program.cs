@@ -20,7 +20,7 @@ namespace YTDownloader
 {
 	class Program
 	{
-		const string ApiUrl = "https://ytbes.herokuapp.com";
+		const string ApiUrl = "http://nas.lan";
 		const string TestEndpoint = "/test";
 		const string PlaylistEndpoint = "/playlist";
 		const string ThumbnailEndpoint = "/thumbnail";
@@ -45,11 +45,11 @@ namespace YTDownloader
 
 			//Console.WriteLine("Arguments loaded.");
 
-			if ( ! await IsServerRunning() )
-			{
-				WriteError("Internet is down or server is not responding.\nPlease, try again later.");
-				return;
-			}
+			// if ( ! await IsServerRunning() )
+			// {
+			// 	WriteError("Internet is down or server is not responding.\nPlease, try again later.");
+			// 	return;
+			// }
 
 			//Console.WriteLine("Server is online.");
 
